@@ -111,7 +111,12 @@ extern "C" Datum ckhandler(PG_FUNCTION_ARGS) {
   amroutine->ampredlocks = false;
   amroutine->amcanparallel = false;
   amroutine->amcaninclude = false;
+#if PG_VERSION_NUM >= 170000
+  amroutine->amusemaintenanceworkmem = true;
+  amroutine->amcanbuildparallel = true;
+#else
   amroutine->amusemaintenanceworkmem = false;
+#endif
   amroutine->amparallelvacuumoptions =
       VACUUM_OPTION_PARALLEL_BULKDEL | VACUUM_OPTION_PARALLEL_CLEANUP;
   amroutine->amkeytype = InvalidOid;
