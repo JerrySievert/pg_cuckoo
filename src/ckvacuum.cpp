@@ -17,6 +17,16 @@ extern "C" {
 #include "storage/indexfsm.h"
 }
 
+/*
+ * Compatibility for vacuum_delay_point() API change.
+ * PG18+ requires a bool is_analyze parameter, earlier versions do not.
+ */
+#if PG_VERSION_NUM >= 180000
+#define CuckooVacuumDelayPoint() vacuum_delay_point(false)
+#else
+#define CuckooVacuumDelayPoint() vacuum_delay_point()
+#endif
+
 /**
  * @brief Bulk delete index entries pointing to deleted heap tuples.
  *
@@ -58,7 +68,7 @@ IndexBulkDeleteResult *ckbulkdelete(IndexVacuumInfo *info,
   for (blkno = CUCKOO_HEAD_BLKNO; blkno < npages; blkno++) {
     CuckooTuple *itup, *itupPtr, *itupEnd;
 
-    vacuum_delay_point();
+    CuckooVacuumDelayPoint();
 
     buffer = ReadBufferExtended(index, MAIN_FORKNUM, blkno, RBM_NORMAL,
                                 info->strategy);
@@ -185,7 +195,7 @@ IndexBulkDeleteResult *ckvacuumcleanup(IndexVacuumInfo *info,
     Buffer buffer;
     Page page;
 
-    vacuum_delay_point();
+    CuckooVacuumDelayPoint();
 
     buffer = ReadBufferExtended(index, MAIN_FORKNUM, blkno, RBM_NORMAL,
                                 info->strategy);
