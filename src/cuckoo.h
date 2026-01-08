@@ -20,6 +20,14 @@ extern "C" {
 #include "access/xlog.h"
 #include "fmgr.h"
 #include "nodes/pathnodes.h"
+
+#if PG_VERSION_NUM >= 170000
+#include "access/parallel.h"
+#include "executor/instrument.h"
+#include "storage/condition_variable.h"
+#include "storage/spin.h"
+#include "utils/tuplesort.h"
+#endif
 }
 
 /*
@@ -189,6 +197,85 @@ typedef struct CuckooScanOpaqueData {
 typedef CuckooScanOpaqueData *CuckooScanOpaque;
 
 /*
+ * Parallel index build support (PG17+)
+ */
+#if PG_VERSION_NUM >= 170000
+
+/* Shared memory keys for parallel build */
+#define PARALLEL_KEY_CUCKOO_SHARED UINT64CONST(0xC0C000C000000001)
+#define PARALLEL_KEY_TUPLESORT UINT64CONST(0xC0C000C000000002)
+#define PARALLEL_KEY_QUERY_TEXT UINT64CONST(0xC0C000C000000003)
+#define PARALLEL_KEY_WAL_USAGE UINT64CONST(0xC0C000C000000004)
+#define PARALLEL_KEY_BUFFER_USAGE UINT64CONST(0xC0C000C000000005)
+
+/**
+ * @brief Shared state for parallel cuckoo index build.
+ *
+ * This structure is stored in dynamic shared memory and accessed
+ * by both the leader and worker processes.
+ */
+typedef struct CuckooShared {
+  /* Immutable state set by leader */
+  Oid heaprelid;           /**< Heap relation OID */
+  Oid indexrelid;          /**< Index relation OID */
+  bool isconcurrent;       /**< Is this a concurrent build? */
+  int scantuplesortstates; /**< Number of tuplesort participants */
+
+  /* Cuckoo index options (immutable during build) */
+  int bitsPerTag;    /**< Bits per fingerprint tag */
+  int tagsPerBucket; /**< Tags per bucket */
+  int maxKicks;      /**< Max relocation attempts */
+  int nColumns;      /**< Number of indexed columns */
+
+  /* Synchronization primitives */
+  ConditionVariable workersdonecv; /**< Signals worker completion */
+  slock_t mutex;                   /**< Protects mutable state */
+
+  /* Mutable state (protected by mutex) */
+  int nparticipantsdone; /**< Count of finished workers */
+  double reltuples;      /**< Accumulated heap tuple count */
+  double indtuples;      /**< Accumulated index tuple count */
+} CuckooShared;
+
+/* Forward declarations for parallel build types */
+struct ParallelContext;
+struct Sharedsort;
+
+/**
+ * @brief Leader-specific state for parallel cuckoo build.
+ */
+typedef struct CuckooLeader {
+  struct ParallelContext *pcxt;  /**< Parallel context */
+  int nparticipanttuplesorts;    /**< Number of tuplesort participants */
+  CuckooShared *shared;          /**< Pointer to shared state in DSM */
+  struct Sharedsort *sharedsort; /**< Shared tuplesort coordination */
+  Snapshot snapshot;             /**< Snapshot for heap scan */
+  WalUsage *walusage;            /**< WAL usage array for workers */
+  BufferUsage *bufferusage;      /**< Buffer usage array for workers */
+} CuckooLeader;
+
+/**
+ * @brief Build state for parallel cuckoo index build.
+ *
+ * Extended version of CuckooBuildState that includes parallel-specific fields.
+ */
+typedef struct CuckooParallelBuildState {
+  CuckooState ckstate;  /**< Cuckoo index state */
+  int64 indtuples;      /**< Total tuples indexed by this process */
+  double reltuples;     /**< Heap tuples scanned by this process */
+  MemoryContext tmpCtx; /**< Temporary memory context */
+  PGAlignedBlock data;  /**< Cached page data */
+  int count;            /**< Tuples in cached page */
+
+  /* Parallel-specific fields */
+  CuckooLeader *leader;      /**< Non-NULL only in leader process */
+  Tuplesortstate *sortstate; /**< Tuplesort state */
+  bool isworker;             /**< True if this is a worker process */
+} CuckooParallelBuildState;
+
+#endif /* PG_VERSION_NUM >= 170000 */
+
+/*
  * Function declarations - ckutils.cpp
  */
 extern "C" {
@@ -246,6 +333,11 @@ extern void ckcostestimate(PlannerInfo *root, IndexPath *path,
 
 /* ckutils.cpp - reloptions */
 extern bytea *ckoptions(Datum reloptions, bool validate);
+
+/* ckinsert.cpp - parallel build (PG17+) */
+#if PG_VERSION_NUM >= 170000
+extern void _ck_parallel_build_main(dsm_segment *seg, shm_toc *toc);
+#endif
 
 } /* extern "C" */
 
