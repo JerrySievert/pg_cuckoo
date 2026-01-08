@@ -1,0 +1,517 @@
+CREATE EXTENSION cuckoo;
+CREATE TABLE tst (
+	i	int4,
+	t	text
+);
+INSERT INTO tst SELECT i%10, substr(encode(sha256(i::text::bytea), 'hex'), 1, 1) FROM generate_series(1,2000) i;
+-- Create separate indexes for each column (cuckoo fingerprints work best with single columns
+-- or when all columns are specified in the query)
+CREATE INDEX cuckooidx_i ON tst USING cuckoo (i);
+CREATE INDEX cuckooidx_t ON tst USING cuckoo (t);
+SET enable_seqscan=on;
+SET enable_bitmapscan=off;
+SET enable_indexscan=off;
+SELECT count(*) FROM tst WHERE i = 7;
+ count 
+-------
+   200
+(1 row)
+
+SELECT count(*) FROM tst WHERE t = '5';
+ count 
+-------
+   126
+(1 row)
+
+SELECT count(*) FROM tst WHERE i = 7 AND t = '5';
+ count 
+-------
+    14
+(1 row)
+
+SET enable_seqscan=off;
+SET enable_bitmapscan=on;
+SET enable_indexscan=on;
+EXPLAIN (COSTS OFF) SELECT count(*) FROM tst WHERE i = 7;
+                  QUERY PLAN                  
+----------------------------------------------
+ Aggregate
+   ->  Bitmap Heap Scan on tst
+         Recheck Cond: (i = 7)
+         ->  Bitmap Index Scan on cuckooidx_i
+               Index Cond: (i = 7)
+(5 rows)
+
+EXPLAIN (COSTS OFF) SELECT count(*) FROM tst WHERE t = '5';
+                  QUERY PLAN                  
+----------------------------------------------
+ Aggregate
+   ->  Bitmap Heap Scan on tst
+         Recheck Cond: (t = '5'::text)
+         ->  Bitmap Index Scan on cuckooidx_t
+               Index Cond: (t = '5'::text)
+(5 rows)
+
+EXPLAIN (COSTS OFF) SELECT count(*) FROM tst WHERE i = 7 AND t = '5';
+                  QUERY PLAN                  
+----------------------------------------------
+ Aggregate
+   ->  Bitmap Heap Scan on tst
+         Recheck Cond: (t = '5'::text)
+         Filter: (i = 7)
+         ->  Bitmap Index Scan on cuckooidx_t
+               Index Cond: (t = '5'::text)
+(6 rows)
+
+SELECT count(*) FROM tst WHERE i = 7;
+ count 
+-------
+   200
+(1 row)
+
+SELECT count(*) FROM tst WHERE t = '5';
+ count 
+-------
+   126
+(1 row)
+
+SELECT count(*) FROM tst WHERE i = 7 AND t = '5';
+ count 
+-------
+    14
+(1 row)
+
+DELETE FROM tst;
+INSERT INTO tst SELECT i%10, substr(encode(sha256(i::text::bytea), 'hex'), 1, 1) FROM generate_series(1,2000) i;
+VACUUM ANALYZE tst;
+SELECT count(*) FROM tst WHERE i = 7;
+ count 
+-------
+   200
+(1 row)
+
+SELECT count(*) FROM tst WHERE t = '5';
+ count 
+-------
+   126
+(1 row)
+
+SELECT count(*) FROM tst WHERE i = 7 AND t = '5';
+ count 
+-------
+    14
+(1 row)
+
+DELETE FROM tst WHERE i > 1 OR t = '5';
+VACUUM tst;
+INSERT INTO tst SELECT i%10, substr(encode(sha256(i::text::bytea), 'hex'), 1, 1) FROM generate_series(1,2000) i;
+SELECT count(*) FROM tst WHERE i = 7;
+ count 
+-------
+   200
+(1 row)
+
+SELECT count(*) FROM tst WHERE t = '5';
+ count 
+-------
+   126
+(1 row)
+
+SELECT count(*) FROM tst WHERE i = 7 AND t = '5';
+ count 
+-------
+    14
+(1 row)
+
+VACUUM FULL tst;
+SELECT count(*) FROM tst WHERE i = 7;
+ count 
+-------
+   200
+(1 row)
+
+SELECT count(*) FROM tst WHERE t = '5';
+ count 
+-------
+   126
+(1 row)
+
+SELECT count(*) FROM tst WHERE i = 7 AND t = '5';
+ count 
+-------
+    14
+(1 row)
+
+-- Try an unlogged table too
+CREATE UNLOGGED TABLE tstu (
+	i	int4,
+	t	text
+);
+INSERT INTO tstu SELECT i%10, substr(encode(sha256(i::text::bytea), 'hex'), 1, 1) FROM generate_series(1,2000) i;
+CREATE INDEX cuckooidxu_i ON tstu USING cuckoo (i);
+CREATE INDEX cuckooidxu_t ON tstu USING cuckoo (t);
+SET enable_seqscan=off;
+SET enable_bitmapscan=on;
+SET enable_indexscan=on;
+EXPLAIN (COSTS OFF) SELECT count(*) FROM tstu WHERE i = 7;
+                  QUERY PLAN                   
+-----------------------------------------------
+ Aggregate
+   ->  Bitmap Heap Scan on tstu
+         Recheck Cond: (i = 7)
+         ->  Bitmap Index Scan on cuckooidxu_i
+               Index Cond: (i = 7)
+(5 rows)
+
+EXPLAIN (COSTS OFF) SELECT count(*) FROM tstu WHERE t = '5';
+                  QUERY PLAN                   
+-----------------------------------------------
+ Aggregate
+   ->  Bitmap Heap Scan on tstu
+         Recheck Cond: (t = '5'::text)
+         ->  Bitmap Index Scan on cuckooidxu_t
+               Index Cond: (t = '5'::text)
+(5 rows)
+
+EXPLAIN (COSTS OFF) SELECT count(*) FROM tstu WHERE i = 7 AND t = '5';
+                  QUERY PLAN                   
+-----------------------------------------------
+ Aggregate
+   ->  Bitmap Heap Scan on tstu
+         Recheck Cond: (t = '5'::text)
+         Filter: (i = 7)
+         ->  Bitmap Index Scan on cuckooidxu_t
+               Index Cond: (t = '5'::text)
+(6 rows)
+
+SELECT count(*) FROM tstu WHERE i = 7;
+ count 
+-------
+   200
+(1 row)
+
+SELECT count(*) FROM tstu WHERE t = '5';
+ count 
+-------
+   126
+(1 row)
+
+SELECT count(*) FROM tstu WHERE i = 7 AND t = '5';
+ count 
+-------
+    14
+(1 row)
+
+RESET enable_seqscan;
+RESET enable_bitmapscan;
+RESET enable_indexscan;
+-- Run amvalidator function on our opclasses
+SELECT opcname, amvalidate(opc.oid)
+FROM pg_opclass opc JOIN pg_am am ON am.oid = opcmethod
+WHERE amname = 'cuckoo'
+ORDER BY 1;
+    opcname    | amvalidate 
+---------------+------------
+ bpchar_ops    | t
+ char_ops      | t
+ float4_ops    | t
+ float8_ops    | t
+ inet_ops      | t
+ int2_ops      | t
+ int4_ops      | t
+ int8_ops      | t
+ interval_ops  | t
+ jsonb_ops     | t
+ macaddr8_ops  | t
+ macaddr_ops   | t
+ name_ops      | t
+ numeric_ops   | t
+ oid_ops       | t
+ oidvector_ops | t
+ pg_lsn_ops    | t
+ text_ops      | t
+ tid_ops       | t
+ time_ops      | t
+ timestamp_ops | t
+ timetz_ops    | t
+ uuid_ops      | t
+(23 rows)
+
+--
+-- Test all operator classes
+--
+\echo Testing all operator classes...
+Testing all operator classes...
+-- Create a table with all supported types
+CREATE TABLE opclass_test (
+    -- Integer types
+    col_int2 int2,
+    col_int4 int4,
+    col_int8 int8,
+    col_oid oid,
+    -- Float types
+    col_float4 float4,
+    col_float8 float8,
+    col_numeric numeric,
+    -- String types
+    col_text text,
+    col_name name,
+    col_char "char",
+    col_bpchar bpchar(10),
+    -- Date/Time types
+    col_timestamp timestamp,
+    col_time time,
+    col_timetz timetz,
+    col_interval interval,
+    -- Network types
+    col_inet inet,
+    col_macaddr macaddr,
+    col_macaddr8 macaddr8,
+    -- Other types
+    col_uuid uuid,
+    col_jsonb jsonb,
+    col_pg_lsn pg_lsn,
+    col_tid tid,
+    col_oidvector oidvector
+);
+-- Insert test data
+INSERT INTO opclass_test VALUES (
+    1::int2, 42, 1234567890123, 100::oid,
+    3.14::float4, 2.71828::float8, 123.456::numeric,
+    'hello', 'testname', 'x', 'fixedchar',
+    '2024-01-15 10:30:00'::timestamp, '10:30:00'::time, '10:30:00+05'::timetz, '1 day 2 hours'::interval,
+    '192.168.1.1'::inet, '08:00:2b:01:02:03'::macaddr, '08:00:2b:01:02:03:04:05'::macaddr8,
+    'a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11'::uuid, '{"key": "value"}'::jsonb,
+    '0/1234567'::pg_lsn, '(0,1)'::tid, '1 2 3'::oidvector
+);
+-- Insert more rows for better testing
+INSERT INTO opclass_test SELECT * FROM opclass_test;
+INSERT INTO opclass_test SELECT * FROM opclass_test;
+INSERT INTO opclass_test SELECT * FROM opclass_test;
+-- Create indexes for each type
+CREATE INDEX idx_int2 ON opclass_test USING cuckoo (col_int2);
+CREATE INDEX idx_int4 ON opclass_test USING cuckoo (col_int4);
+CREATE INDEX idx_int8 ON opclass_test USING cuckoo (col_int8);
+CREATE INDEX idx_oid ON opclass_test USING cuckoo (col_oid);
+CREATE INDEX idx_float4 ON opclass_test USING cuckoo (col_float4);
+CREATE INDEX idx_float8 ON opclass_test USING cuckoo (col_float8);
+CREATE INDEX idx_numeric ON opclass_test USING cuckoo (col_numeric);
+CREATE INDEX idx_text ON opclass_test USING cuckoo (col_text);
+CREATE INDEX idx_name ON opclass_test USING cuckoo (col_name);
+CREATE INDEX idx_char ON opclass_test USING cuckoo (col_char);
+CREATE INDEX idx_bpchar ON opclass_test USING cuckoo (col_bpchar);
+CREATE INDEX idx_timestamp ON opclass_test USING cuckoo (col_timestamp);
+CREATE INDEX idx_time ON opclass_test USING cuckoo (col_time);
+CREATE INDEX idx_timetz ON opclass_test USING cuckoo (col_timetz);
+CREATE INDEX idx_interval ON opclass_test USING cuckoo (col_interval);
+CREATE INDEX idx_inet ON opclass_test USING cuckoo (col_inet);
+CREATE INDEX idx_macaddr ON opclass_test USING cuckoo (col_macaddr);
+CREATE INDEX idx_macaddr8 ON opclass_test USING cuckoo (col_macaddr8);
+CREATE INDEX idx_uuid ON opclass_test USING cuckoo (col_uuid);
+CREATE INDEX idx_jsonb ON opclass_test USING cuckoo (col_jsonb);
+CREATE INDEX idx_pg_lsn ON opclass_test USING cuckoo (col_pg_lsn);
+CREATE INDEX idx_tid ON opclass_test USING cuckoo (col_tid);
+CREATE INDEX idx_oidvector ON opclass_test USING cuckoo (col_oidvector);
+SET enable_seqscan = off;
+-- Test queries using each index
+SELECT count(*) FROM opclass_test WHERE col_int2 = 1::int2;
+ count 
+-------
+     8
+(1 row)
+
+SELECT count(*) FROM opclass_test WHERE col_int4 = 42;
+ count 
+-------
+     8
+(1 row)
+
+SELECT count(*) FROM opclass_test WHERE col_int8 = 1234567890123;
+ count 
+-------
+     8
+(1 row)
+
+SELECT count(*) FROM opclass_test WHERE col_oid = 100::oid;
+ count 
+-------
+     8
+(1 row)
+
+SELECT count(*) FROM opclass_test WHERE col_float4 = 3.14::float4;
+ count 
+-------
+     8
+(1 row)
+
+SELECT count(*) FROM opclass_test WHERE col_float8 = 2.71828::float8;
+ count 
+-------
+     8
+(1 row)
+
+SELECT count(*) FROM opclass_test WHERE col_numeric = 123.456::numeric;
+ count 
+-------
+     8
+(1 row)
+
+SELECT count(*) FROM opclass_test WHERE col_text = 'hello';
+ count 
+-------
+     8
+(1 row)
+
+SELECT count(*) FROM opclass_test WHERE col_name = 'testname'::name;
+ count 
+-------
+     8
+(1 row)
+
+SELECT count(*) FROM opclass_test WHERE col_char = 'x'::"char";
+ count 
+-------
+     8
+(1 row)
+
+SELECT count(*) FROM opclass_test WHERE col_bpchar = 'fixedchar'::bpchar(10);
+ count 
+-------
+     8
+(1 row)
+
+SELECT count(*) FROM opclass_test WHERE col_timestamp = '2024-01-15 10:30:00'::timestamp;
+ count 
+-------
+     8
+(1 row)
+
+SELECT count(*) FROM opclass_test WHERE col_time = '10:30:00'::time;
+ count 
+-------
+     8
+(1 row)
+
+SELECT count(*) FROM opclass_test WHERE col_timetz = '10:30:00+05'::timetz;
+ count 
+-------
+     8
+(1 row)
+
+SELECT count(*) FROM opclass_test WHERE col_interval = '1 day 2 hours'::interval;
+ count 
+-------
+     8
+(1 row)
+
+SELECT count(*) FROM opclass_test WHERE col_inet = '192.168.1.1'::inet;
+ count 
+-------
+     8
+(1 row)
+
+SELECT count(*) FROM opclass_test WHERE col_macaddr = '08:00:2b:01:02:03'::macaddr;
+ count 
+-------
+     8
+(1 row)
+
+SELECT count(*) FROM opclass_test WHERE col_macaddr8 = '08:00:2b:01:02:03:04:05'::macaddr8;
+ count 
+-------
+     8
+(1 row)
+
+SELECT count(*) FROM opclass_test WHERE col_uuid = 'a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11'::uuid;
+ count 
+-------
+     8
+(1 row)
+
+SELECT count(*) FROM opclass_test WHERE col_jsonb = '{"key": "value"}'::jsonb;
+ count 
+-------
+     8
+(1 row)
+
+SELECT count(*) FROM opclass_test WHERE col_pg_lsn = '0/1234567'::pg_lsn;
+ count 
+-------
+     8
+(1 row)
+
+SELECT count(*) FROM opclass_test WHERE col_tid = '(0,1)'::tid;
+ count 
+-------
+     8
+(1 row)
+
+SELECT count(*) FROM opclass_test WHERE col_oidvector = '1 2 3'::oidvector;
+ count 
+-------
+     8
+(1 row)
+
+RESET enable_seqscan;
+-- Cleanup opclass test
+DROP TABLE opclass_test;
+--
+-- relation options
+--
+DROP INDEX cuckooidx_i;
+CREATE INDEX cuckooidx_i ON tst USING cuckoo (i) WITH (bits_per_tag=16);
+SELECT reloptions FROM pg_class WHERE oid = 'cuckooidx_i'::regclass;
+    reloptions     
+-------------------
+ {bits_per_tag=16}
+(1 row)
+
+-- test new performance tuning options
+DROP INDEX cuckooidx_i;
+CREATE INDEX cuckooidx_i ON tst USING cuckoo (i) WITH (bits_per_tag=8, tags_per_bucket=2, max_kicks=100);
+SELECT reloptions FROM pg_class WHERE oid = 'cuckooidx_i'::regclass;
+                    reloptions                    
+--------------------------------------------------
+ {bits_per_tag=8,tags_per_bucket=2,max_kicks=100}
+(1 row)
+
+-- verify the index still works with custom options
+SELECT count(*) FROM tst WHERE i = 7;
+ count 
+-------
+   200
+(1 row)
+
+-- test with higher precision (lower false positive rate)
+DROP INDEX cuckooidx_i;
+CREATE INDEX cuckooidx_i ON tst USING cuckoo (i) WITH (bits_per_tag=20, tags_per_bucket=4, max_kicks=1000);
+SELECT reloptions FROM pg_class WHERE oid = 'cuckooidx_i'::regclass;
+                     reloptions                     
+----------------------------------------------------
+ {bits_per_tag=20,tags_per_bucket=4,max_kicks=1000}
+(1 row)
+
+SELECT count(*) FROM tst WHERE i = 7;
+ count 
+-------
+   200
+(1 row)
+
+-- check for min and max values
+\set VERBOSITY terse
+CREATE INDEX cuckooidx2 ON tst USING cuckoo (i) WITH (bits_per_tag=0);
+ERROR:  value 0 out of bounds for option "bits_per_tag"
+CREATE INDEX cuckooidx2 ON tst USING cuckoo (i) WITH (bits_per_tag=100);
+ERROR:  value 100 out of bounds for option "bits_per_tag"
+CREATE INDEX cuckooidx2 ON tst USING cuckoo (i) WITH (tags_per_bucket=1);
+ERROR:  value 1 out of bounds for option "tags_per_bucket"
+CREATE INDEX cuckooidx2 ON tst USING cuckoo (i) WITH (tags_per_bucket=10);
+ERROR:  value 10 out of bounds for option "tags_per_bucket"
+CREATE INDEX cuckooidx2 ON tst USING cuckoo (i) WITH (max_kicks=10);
+ERROR:  value 10 out of bounds for option "max_kicks"
+CREATE INDEX cuckooidx2 ON tst USING cuckoo (i) WITH (max_kicks=5000);
+ERROR:  value 5000 out of bounds for option "max_kicks"
+-- cleanup
+DROP TABLE tst;
+DROP TABLE tstu;
+DROP EXTENSION cuckoo;
